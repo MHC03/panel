@@ -4,6 +4,7 @@ set of widgets.
 """
 from __future__ import absolute_import
 
+import re
 import os
 import json
 import types
@@ -37,6 +38,17 @@ def ObjectSelector(pobj):
         return DiscreteSlider
     else:
         return Select
+
+
+def FileSelector(pobj):
+    """
+    Determines whether to use a TextInput or Select widget for FileSelector
+    """
+    if pobj.path:
+        return Select
+    else:
+        return TextInput
+
 
 
 class Param(PaneBase):
@@ -81,7 +93,10 @@ class Param(PaneBase):
         Parameterized object.""")
 
     show_labels = param.Boolean(default=True, doc="""
-        Whether to show labels for each .widget""")
+        Whether to show labels for each widget""")
+
+    show_name = param.Boolean(default=True, doc="""
+        Whether to show the parameterized object's name""")
 
     width = param.Integer(default=300, bounds=(0, None), doc="""
         Width of widgetbox the parameter widgets are displayed in.""")
@@ -94,6 +109,7 @@ class Param(PaneBase):
         param.Dict:           LiteralInput,
         param.Selector:       Select,
         param.ObjectSelector: ObjectSelector,
+        param.FileSelector:   FileSelector,
         param.Boolean:        Checkbox,
         param.Number:         FloatSlider,
         param.Integer:        IntSlider,
@@ -141,7 +157,8 @@ class Param(PaneBase):
     def __repr__(self, depth=0):
         cls = type(self).__name__
         obj_cls = type(self.object).__name__
-        parameters = [k for k in self.object.params() if k != 'name']
+        params = [] if self.object is None else self.object.params()
+        parameters = [k for k in params if k != 'name']
         params = []
         for p, v in sorted(self.get_param_values()):
             if v is self.params(p).default: continue
@@ -318,9 +335,9 @@ class Param(PaneBase):
         else:
             return [widget]
 
-    def _cleanup(self, model=None, final=False):
-        self.layout._cleanup(model, final)
-        super(Param, self)._cleanup(model, final)
+    def _cleanup(self, root=None, final=False):
+        self.layout._cleanup(root, final)
+        super(Param, self)._cleanup(root, final)
 
     def _get_widgets(self):
         """Return name,widget boxes for all parameters (i.e., a property sheet)"""
@@ -338,8 +355,13 @@ class Param(PaneBase):
         ordered_params.pop(ordered_params.index('name'))
         if self.expand_layout is Tabs:
             widgets = []
+        elif self.show_name:
+            name = self.object.name
+            match = re.match('(.)+(\d){5}', name)
+            name = name[:-5] if match else name
+            widgets = [('name', [StaticText(value='<b>{0}</b>'.format(name))])]
         else:
-            widgets = [('name', [StaticText(value='<b>{0}</b>'.format(self.object.name))])]
+            widgets = []
         widgets += [(pname, self.widget(pname)) for pname in ordered_params]
         return OrderedDict(widgets)
 
@@ -370,12 +392,12 @@ class ParamMethod(PaneBase):
     def applies(cls, obj):
         return inspect.ismethod(obj) and isinstance(get_method_owner(obj), param.Parameterized)
 
-    def _get_model(self, doc, root=None, parent=None, comm=None):
+
+    def _link_object_params(self, doc, root, parent, comm):
+        ref = root.ref['id']
         parameterized = get_method_owner(self.object)
         params = parameterized.param.params_depended_on(self.object.__name__)
-        model = self._inner_layout._get_model(doc, root, parent, comm)
         deps = params
-        ref = model.ref['id']
 
         def update_pane(*events):
             # Update nested dependencies if parameterized object events
@@ -406,18 +428,16 @@ class ParamMethod(PaneBase):
             new_object = self.object()
             pane_type = self.get_pane_type(new_object)
             if type(self._pane) is pane_type:
-                if isinstance(new_object, PaneBase):
+                if isinstance(new_object, (Panel, PaneBase)):
+                    pvals = dict(self._pane.get_param_values())
                     new_params = {k: v for k, v in new_object.get_param_values()
-                                  if k != 'name'}
+                                  if k != 'name' and v is not pvals[k]}
                     try:
                         self._pane.set_param(**new_params)
                     except:
                         raise
                     finally:
-                        new_object._cleanup(None, new_object._temporary)
-                elif isinstance(self._pane, Panel):
-                    self._pane.objects = new_object.objects
-                    new_object._cleanup(None, new_object._temporary)
+                        new_object._cleanup(final=new_object._temporary)
                 else:
                     self._pane.object = new_object
                 return
@@ -433,11 +453,19 @@ class ParamMethod(PaneBase):
             watcher = pobj.param.watch(update_pane, ps, p.what)
             self._callbacks[ref].append(watcher)
 
+
+    def _get_model(self, doc, root=None, parent=None, comm=None):
+        ref = root.ref['id']
+        if ref in self._callbacks:
+            self._cleanup(root)
+        model = self._inner_layout._get_model(doc, root, parent, comm)
+        self._link_object_params(doc, root, parent, comm)
+        self._models[ref] = model
         return model
 
-    def _cleanup(self, model=None, final=False):
-        self._inner_layout._cleanup(model, final)
-        super(ParamMethod, self)._cleanup(model, final)
+    def _cleanup(self, root=None, final=False):
+        self._inner_layout._cleanup(root, final)
+        super(ParamMethod, self)._cleanup(root, final)
 
 
 class JSONInit(param.Parameterized):

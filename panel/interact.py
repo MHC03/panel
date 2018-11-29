@@ -185,7 +185,7 @@ class interactive(PaneBase):
                 new_object = self.object(**self.kwargs)
                 pane_type = self.get_pane_type(new_object)
                 if type(self._pane) is pane_type:
-                    if isinstance(new_object, PaneBase):
+                    if isinstance(new_object, (PaneBase, Panel)):
                         new_params = {k: v for k, v in new_object.get_param_values()
                                       if k != 'name'}
                         try:
@@ -193,14 +193,10 @@ class interactive(PaneBase):
                         except:
                             raise
                         finally:
-                            new_object._cleanup(None, new_object._temporary)
-                    elif isinstance(self._pane, Panel):
-                        self._pane.objects = new_object.objects
-                        new_object._cleanup(None, new_object._temporary)
+                            new_object._cleanup(final=new_object._temporary)
                     else:
                         self._pane.object = new_object
                     return
-
 
                 # Replace pane entirely
                 self._pane = Pane(new_object, _temporary=True)
@@ -210,9 +206,9 @@ class interactive(PaneBase):
             watcher = widget.param.watch(update_pane, pname)
             self._callbacks['instance'].append(watcher)
 
-    def _cleanup(self, model=None, final=False):
-        self._inner_layout._cleanup(model, final)
-        super(interactive, self)._cleanup(model, final)
+    def _cleanup(self, root=None, final=False):
+        self._inner_layout._cleanup(root, final)
+        super(interactive, self)._cleanup(root, final)
 
     def widgets_from_abbreviations(self, seq):
         """Given a sequence of (name, abbrev, default) tuples, return a sequence of Widgets."""
@@ -224,7 +220,7 @@ class interactive(PaneBase):
                 widget = self.widget_from_abbrev(abbrev, name, default)
             if not (isinstance(widget, Widget) or isinstance(widget, fixed)):
                 if widget is None:
-                    raise ValueError("{!r} cannot be transformed to a widget".format(abbrev))
+                    continue
                 else:
                     raise TypeError("{!r} is not a ValueWidget".format(widget))
             result.append((name, widget))

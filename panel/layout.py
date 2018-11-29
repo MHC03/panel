@@ -61,13 +61,16 @@ class Panel(Reactive):
         def set_value(*events):
             msg = {event.name: event.new for event in events}
             events = {event.name: event for event in events}
-            if 'objects' in msg:
-                old = events['objects'].old
-                msg['objects'] = self._get_objects(model, old, doc, root, comm)
-            msg = self._process_param_change(msg)
 
             def update_model():
-                model.update(**msg)
+                if 'objects' in msg:
+                    old = events['objects'].old
+                    msg['objects'] = self._get_objects(model, old, doc, root, comm)
+                    for pane in old:
+                        if pane not in self.objects:
+                            pane._cleanup(root)
+                processed = self._process_param_change(msg)
+                model.update(**processed)
 
             if comm:
                 update_model()
@@ -75,15 +78,16 @@ class Panel(Reactive):
             else:
                 doc.add_next_tick_callback(update_model)
 
-        ref = model.ref['id']
-        watcher = self.param.watch(set_value, params)
-        self._callbacks[ref].append(watcher)
+        ref = root.ref['id']
+        if ref not in self._callbacks:
+            watcher = self.param.watch(set_value, params)
+            self._callbacks[ref].append(watcher)
 
-    def _cleanup(self, model=None, final=False):
-        super(Panel, self)._cleanup(model, final)
-        if model is not None:
-            for p, c in zip(self.objects, model.children):
-                p._cleanup(c, final)
+    def _cleanup(self, root=None, final=False):
+        super(Panel, self)._cleanup(root, final)
+        if root is not None:
+            for p in self.objects:
+                p._cleanup(root, final)
 
     def select(self, selector=None):
         """
@@ -111,20 +115,15 @@ class Panel(Reactive):
         models and cleaning up any dropped objects.
         """
         from .pane import panel
-        old_children = getattr(model, self._rename.get('objects', 'objects'))
         new_models = []
         for i, pane in enumerate(self.objects):
             pane = panel(pane, _internal=True)
             self.objects[i] = pane
             if pane in old_objects:
-                child = old_children[old_objects.index(pane)]
+                child = pane._models[root.ref['id']]
             else:
                 child = pane._get_model(doc, root, model, comm)
             new_models.append(child)
-
-        for pane, old_child in zip(old_objects, old_children):
-            if old_child not in new_models:
-                pane._cleanup(old_child)
         return new_models
 
     def _get_model(self, doc, root=None, parent=None, comm=None):
@@ -139,6 +138,7 @@ class Panel(Reactive):
         props = dict(self._init_properties(), objects=objects)
         model.update(**self._process_param_change(props))
         params = [p for p in self.params() if p != 'name']
+        self._models[root.ref['id']] = model
         self._link_params(model, params, doc, root, comm)
         self._link_props(model, self._linked_props, doc, root, comm)
         return model
@@ -229,23 +229,19 @@ class WidgetBox(Panel):
         models and cleaning up any dropped objects.
         """
         from .pane import panel
-        old_children = getattr(model, self._rename.get('objects', 'objects'))
         new_models = []
         for i, pane in enumerate(self.objects):
             pane = panel(pane)
             self.objects[i] = pane
             if pane in old_objects:
-                child = old_children[old_objects.index(pane)]
+                child = pane._models[root.ref['id']]
             else:
                 child = pane._get_model(doc, root, model, comm)
+
             if isinstance(child, BkWidgetBox):
                 new_models += child.children
             else:
                 new_models.append(child)
-
-        for pane, old_child in zip(old_objects, old_children):
-            if old_child not in new_models:
-                pane._cleanup(old_child, pane._temporary)
         return new_models
 
 
@@ -288,21 +284,18 @@ class Tabs(Panel):
         Returns new child models for the layout while reusing unchanged
         models and cleaning up any dropped objects.
         """
-        old_children = getattr(model, self._rename.get('objects', 'objects'))
+        from .pane import panel
         new_models = []
         for i, pane in enumerate(self.objects):
+            pane = panel(pane, _internal=True)
+            self.objects[i] = pane
             if pane in old_objects:
-                child = old_children[old_objects.index(pane)]
+                child = pane._models[root.ref['id']]
             else:
                 child = pane._get_model(doc, root, model, comm)
-                name = pane[0].name if isinstance(pane, Panel) and len(pane) == 1 else pane.name
-                child = BkPanel(title=name, child=child)
+            name = pane[0].name if isinstance(pane, Panel) and len(pane) == 1 else pane.name
+            child = BkPanel(title=name, child=child)
             new_models.append(child)
-
-        for pane, old_child in zip(old_objects, old_children):
-            if old_child not in new_models:
-                pane._cleanup(old_child.child, pane._temporary)
-
         return new_models
 
     def __setitem__(self, index, pane):
@@ -339,12 +332,6 @@ class Tabs(Panel):
         new_objects.pop(index)
         self.objects = new_objects
 
-    def _cleanup(self, model=None, final=False):
-        super(Panel, self)._cleanup(model, final)
-        if model is not None:
-            for p, c in zip(self.objects, model.tabs):
-                p._cleanup(c.child, final)
-
 
 class Spacer(Reactive):
     """Empty object used to control formatting (using positive or negative space)"""
@@ -360,7 +347,15 @@ class Spacer(Reactive):
                       if v not in [None, 'name']}
         return self._process_param_change(properties)
 
+    def _get_root(self, doc, comm=None):
+        root = BkRow()
+        model = self._get_model(doc, root, root, comm=comm)
+        root.children.append(model)
+        self._preprocess(root)
+        return root
+
     def _get_model(self, doc, root=None, parent=None, comm=None):
         model = self._bokeh_model(**self._init_properties())
+        self._models[root.ref['id']] = model
         self._link_params(model, ['width', 'height'], doc, root, comm)
         return model
